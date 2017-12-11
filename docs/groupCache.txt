@@ -1,0 +1,301 @@
+PACKAGE DOCUMENTATION
+
+package groupcache
+    import "github.com/golang/groupcache"
+
+    Package groupcache provides a data loading mechanism with caching and
+    de-duplication that works across a set of peer processes.
+
+    Each data Get first consults its local cache, otherwise delegates to the
+    requested key's canonical owner, which then checks its cache or finally
+    gets the data. In the common case, many concurrent cache misses across a
+    set of peers for the same key result in just one cache fill.
+
+FUNCTIONS
+
+func RegisterNewGroupHook(fn func(*Group))
+    RegisterNewGroupHook registers a hook that is run each time a group is
+    created.
+
+func RegisterPeerPicker(fn func() PeerPicker)
+    RegisterPeerPicker registers the peer initialization function. It is
+    called once, when the first group is created. Either RegisterPeerPicker
+    or RegisterPerGroupPeerPicker should be called exactly once, but not
+    both.
+
+func RegisterPerGroupPeerPicker(fn func(groupName string) PeerPicker)
+    RegisterPerGroupPeerPicker registers the peer initialization function,
+    which takes the groupName, to be used in choosing a PeerPicker. It is
+    called once, when the first group is created. Either RegisterPeerPicker
+    or RegisterPerGroupPeerPicker should be called exactly once, but not
+    both.
+
+func RegisterServerStart(fn func())
+    RegisterServerStart registers a hook that is run when the first group is
+    created.
+
+TYPES
+
+type AtomicInt int64
+    An AtomicInt is an int64 to be accessed atomically.
+
+func (i *AtomicInt) Add(n int64)
+    Add atomically adds n to i.
+
+func (i *AtomicInt) Get() int64
+    Get atomically gets the value of i.
+
+func (i *AtomicInt) String() string
+
+type ByteView struct {
+    // contains filtered or unexported fields
+}
+    A ByteView holds an immutable view of bytes. Internally it wraps either
+    a []byte or a string, but that detail is invisible to callers.
+
+    A ByteView is meant to be used as a value type, not a pointer (like a
+    time.Time).
+
+func (v ByteView) At(i int) byte
+    At returns the byte at index i.
+
+func (v ByteView) ByteSlice() []byte
+    ByteSlice returns a copy of the data as a byte slice.
+
+func (v ByteView) Copy(dest []byte) int
+    Copy copies b into dest and returns the number of bytes copied.
+
+func (v ByteView) Equal(b2 ByteView) bool
+    Equal returns whether the bytes in b are the same as the bytes in b2.
+
+func (v ByteView) EqualBytes(b2 []byte) bool
+    EqualBytes returns whether the bytes in b are the same as the bytes in
+    b2.
+
+func (v ByteView) EqualString(s string) bool
+    EqualString returns whether the bytes in b are the same as the bytes in
+    s.
+
+func (v ByteView) Len() int
+    Len returns the view's length.
+
+func (v ByteView) ReadAt(p []byte, off int64) (n int, err error)
+    ReadAt implements io.ReaderAt on the bytes in v.
+
+func (v ByteView) Reader() io.ReadSeeker
+    Reader returns an io.ReadSeeker for the bytes in v.
+
+func (v ByteView) Slice(from, to int) ByteView
+    Slice slices the view between the provided from and to indices.
+
+func (v ByteView) SliceFrom(from int) ByteView
+    SliceFrom slices the view from the provided index until the end.
+
+func (v ByteView) String() string
+    String returns the data as a string, making a copy if necessary.
+
+func (v ByteView) WriteTo(w io.Writer) (n int64, err error)
+    WriteTo implements io.WriterTo on the bytes in v.
+
+type CacheStats struct {
+    Bytes     int64
+    Items     int64
+    Gets      int64
+    Hits      int64
+    Evictions int64
+}
+    CacheStats are returned by stats accessors on Group.
+
+type CacheType int
+    CacheType represents a type of cache.
+
+const (
+    // The MainCache is the cache for items that this peer is the
+    // owner for.
+    MainCache CacheType = iota + 1
+
+    // The HotCache is the cache for items that seem popular
+    // enough to replicate to this node, even though it's not the
+    // owner.
+    HotCache
+)
+
+type Context interface{}
+    Context is an opaque value passed through calls to the ProtoGetter. It
+    may be nil if your ProtoGetter implementation does not require a
+    context.
+
+type Getter interface {
+    // Get returns the value identified by key, populating dest.
+    //
+    // The returned data must be unversioned. That is, key must
+    // uniquely describe the loaded data, without an implicit
+    // current time, and without relying on cache expiration
+    // mechanisms.
+    Get(ctx Context, key string, dest Sink) error
+}
+    A Getter loads data for a key.
+
+type GetterFunc func(ctx Context, key string, dest Sink) error
+    A GetterFunc implements Getter with a function.
+
+func (f GetterFunc) Get(ctx Context, key string, dest Sink) error
+
+type Group struct {
+
+    // Stats are statistics on the group.
+    Stats Stats
+    // contains filtered or unexported fields
+}
+    A Group is a cache namespace and associated data loaded spread over a
+    group of 1 or more machines.
+
+func GetGroup(name string) *Group
+    GetGroup returns the named group previously created with NewGroup, or
+    nil if there's no such group.
+
+func NewGroup(name string, cacheBytes int64, getter Getter) *Group
+    NewGroup creates a coordinated group-aware Getter from a Getter.
+
+    The returned Getter tries (but does not guarantee) to run only one Get
+    call at once for a given key across an entire set of peer processes.
+    Concurrent callers both in the local process and in other processes
+    receive copies of the answer once the original Get completes.
+
+    The group name must be unique for each getter.
+
+func (g *Group) CacheStats(which CacheType) CacheStats
+    CacheStats returns stats about the provided cache within the group.
+
+func (g *Group) Get(ctx Context, key string, dest Sink) error
+
+func (g *Group) Name() string
+    Name returns the name of the group.
+
+type HTTPPool struct {
+    // Context optionally specifies a context for the server to use when it
+    // receives a request.
+    // If nil, the server uses a nil Context.
+    Context func(*http.Request) Context
+
+    // Transport optionally specifies an http.RoundTripper for the client
+    // to use when it makes a request.
+    // If nil, the client uses http.DefaultTransport.
+    Transport func(Context) http.RoundTripper
+    // contains filtered or unexported fields
+}
+    HTTPPool implements PeerPicker for a pool of HTTP peers.
+
+func NewHTTPPool(self string) *HTTPPool
+    NewHTTPPool initializes an HTTP pool of peers, and registers itself as a
+    PeerPicker. For convenience, it also registers itself as an http.Handler
+    with http.DefaultServeMux. The self argument should be a valid base URL
+    that points to the current server, for example
+    "http://example.net:8000".
+
+func NewHTTPPoolOpts(self string, o *HTTPPoolOptions) *HTTPPool
+    NewHTTPPoolOpts initializes an HTTP pool of peers with the given
+    options. Unlike NewHTTPPool, this function does not register the created
+    pool as an HTTP handler. The returned *HTTPPool implements http.Handler
+    and must be registered using http.Handle.
+
+func (p *HTTPPool) PickPeer(key string) (ProtoGetter, bool)
+
+func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request)
+
+func (p *HTTPPool) Set(peers ...string)
+    Set updates the pool's list of peers. Each peer value should be a valid
+    base URL, for example "http://example.net:8000".
+
+type HTTPPoolOptions struct {
+    // BasePath specifies the HTTP path that will serve groupcache requests.
+    // If blank, it defaults to "/_groupcache/".
+    BasePath string
+
+    // Replicas specifies the number of key replicas on the consistent hash.
+    // If blank, it defaults to 50.
+    Replicas int
+
+    // HashFn specifies the hash function of the consistent hash.
+    // If blank, it defaults to crc32.ChecksumIEEE.
+    HashFn consistenthash.Hash
+}
+    HTTPPoolOptions are the configurations of a HTTPPool.
+
+type NoPeers struct{}
+    NoPeers is an implementation of PeerPicker that never finds a peer.
+
+func (NoPeers) PickPeer(key string) (peer ProtoGetter, ok bool)
+
+type PeerPicker interface {
+    // PickPeer returns the peer that owns the specific key
+    // and true to indicate that a remote peer was nominated.
+    // It returns nil, false if the key owner is the current peer.
+    PickPeer(key string) (peer ProtoGetter, ok bool)
+}
+    PeerPicker is the interface that must be implemented to locate the peer
+    that owns a specific key.
+
+type ProtoGetter interface {
+    Get(context Context, in *pb.GetRequest, out *pb.GetResponse) error
+}
+    ProtoGetter is the interface that must be implemented by a peer.
+
+type Sink interface {
+    // SetString sets the value to s.
+    SetString(s string) error
+
+    // SetBytes sets the value to the contents of v.
+    // The caller retains ownership of v.
+    SetBytes(v []byte) error
+
+    // SetProto sets the value to the encoded version of m.
+    // The caller retains ownership of m.
+    SetProto(m proto.Message) error
+    // contains filtered or unexported methods
+}
+    A Sink receives data from a Get call.
+
+    Implementation of Getter must call exactly one of the Set methods on
+    success.
+
+func AllocatingByteSliceSink(dst *[]byte) Sink
+    AllocatingByteSliceSink returns a Sink that allocates a byte slice to
+    hold the received value and assigns it to *dst. The memory is not
+    retained by groupcache.
+
+func ByteViewSink(dst *ByteView) Sink
+    ByteViewSink returns a Sink that populates a ByteView.
+
+func ProtoSink(m proto.Message) Sink
+    ProtoSink returns a sink that unmarshals binary proto values into m.
+
+func StringSink(sp *string) Sink
+    StringSink returns a Sink that populates the provided string pointer.
+
+func TruncatingByteSliceSink(dst *[]byte) Sink
+    TruncatingByteSliceSink returns a Sink that writes up to len(*dst) bytes
+    to *dst. If more bytes are available, they're silently truncated. If
+    fewer bytes are available than len(*dst), *dst is shrunk to fit the
+    number of bytes available.
+
+type Stats struct {
+    Gets           AtomicInt // any Get request, including from peers
+    CacheHits      AtomicInt // either cache was good
+    PeerLoads      AtomicInt // either remote load or remote cache hit (not an error)
+    PeerErrors     AtomicInt
+    Loads          AtomicInt // (gets - cacheHits)
+    LoadsDeduped   AtomicInt // after singleflight
+    LocalLoads     AtomicInt // total good local loads
+    LocalLoadErrs  AtomicInt // total bad local loads
+    ServerRequests AtomicInt // gets that came over the network from peers
+}
+    Stats are per-group statistics.
+
+SUBDIRECTORIES
+
+        consistenthash
+        groupcachepb
+        lru
+        singleflight
+        testpb
